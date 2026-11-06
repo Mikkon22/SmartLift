@@ -1,5 +1,5 @@
 // Offline cache. Bump VERSION whenever any file changes so phones pick up the update.
-const VERSION = "smart-lift-v1";
+const VERSION = "smart-lift-v2";
 const FILES = [
   "./", "index.html", "manifest.webmanifest", "css/app.css",
   "js/app.js", "js/plan.js", "js/engine.js", "js/store.js", "js/ui.js",

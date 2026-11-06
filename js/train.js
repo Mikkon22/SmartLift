@@ -13,7 +13,7 @@ export function mountTrain(container, navigate) {
   if (a && a.open) renderSession(); else renderHome();
 }
 
-export function leaveTrain() { stopTick(); }
+export function leaveTrain() { stopTick(); setInSession(false); }
 
 // ------------------------------------------------------------------ helpers
 function phaseById(id) { return PHASES.find((p) => p.id === id) || PHASES[0]; }
@@ -47,6 +47,7 @@ function joinSets(sets, unit) { return sets.map((v) => fmtVal(v, unit)).join(" �
 // ------------------------------------------------------------------ home
 function renderHome() {
   stopTick();
+  setInSession(false);
   const st = store.getSettings();
   const phase = phaseById(st.phase);
   const doneCount = store.sessionsDoneInPhase(phase.id);
@@ -186,6 +187,7 @@ function finishSession() {
 }
 
 function showSummary(w, a) {
+  setInSession(false);
   const view = h("main", { class: "view" });
   view.append(h("header", { class: "page-h" },
     h("div", { class: "t" }, h("span", { class: "eyebrow" }, "Zapisano · " + phaseById(w.phase).name), h("h1", null, w.sessionName + " zrobiony"))));
@@ -217,200 +219,207 @@ function showSummary(w, a) {
 }
 
 // ------------------------------------------------------------------ session screen
+// Layout follows the Figma frame "Exercise-first carousel": one big card per exercise, swipe
+// between them, an editable set table (Goal / Reps / RPE / ✓) and a bottom bar with the rest timer.
+function setInSession(on) { document.body.classList.toggle("in-session", on); }
+
 function renderSession() {
   const a = store.getActive();
   if (!a) { renderHome(); return; }
-  const e = a.exercises[a.cur];
-  const item = itemOf(a, a.cur);
-  const meta = EXERCISES[e.ex];
+  setInSession(true);
   const phase = phaseById(a.phase);
-  const totalDone = sum(e.done.map((d) => d.v));
-  const reached = totalDone >= e.target && e.plan.length === 0;
 
-  const view = h("main", { class: "view" });
-
-  // header
+  const view = h("main", { class: "view session" });
   view.append(h("header", { class: "page-h" },
     h("button", { class: "round-btn", "aria-label": "Wróć do planu", onclick: renderHome }, icon("back")),
     h("div", { class: "t", style: { flex: 1, paddingLeft: "6px" } },
-      h("span", { class: "eyebrow" }, phase.name + (a.deload ? " · deload" : "")),
+      h("span", { class: "eyebrow" }, phase.name + (a.deload ? " · deload" : "") + " · widok ćwiczenia"),
       h("h1", null, a.sessionName)),
     h("button", { class: "round-btn", "aria-label": "Opcje treningu", onclick: () => sessionMenu(a) }, icon("more"))));
 
-  // exercise progress
-  const track = h("div", { class: "progress-track", "aria-hidden": "true" });
-  a.exercises.forEach((x, i) => {
-    const t = sum(x.done.map((d) => d.v));
-    const full = x.done.length && x.plan.length === 0;
-    const el = h("i", { class: full ? "done" : i === a.cur ? "cur" : "" });
-    if (!full && x.target) el.style.setProperty("--p", Math.min(100, (t / x.target) * 100) + "%");
-    track.append(el);
-  });
-  view.append(h("div", { class: "row", style: { padding: "0 10px" } }, track,
-    h("span", { class: "hint-text num", style: { color: "var(--muted)", fontSize: "11px" } }, "Ćwiczenie " + (a.cur + 1) + " / " + a.exercises.length)));
+  const count = h("p", { class: "ex-count num" });
+  const track = h("div", { class: "seg-track" });
+  view.append(h("div", { class: "orient" }, count, track));
 
-  // exercise card
-  const head = h("section", { class: "glass" },
-    h("div", { class: "ex-head" },
-      h("span", { class: "ph s50 " + meta.group, "aria-hidden": "true" }, initials(meta.name)),
-      h("div", { class: "body" },
-        h("div", { class: "nm" }, h("span", { class: "eyebrow", style: { marginRight: "6px" } }, e.code), meta.name),
-        h("div", { class: "sub" }, [e.variation, item.side ? "na stronę (L&R)" : ""].filter(Boolean).join(" · ") || "—")),
-      h("button", { class: "round-btn", "aria-label": "Podgląd ćwiczenia", onclick: () => exerciseSheet(item, e) }, icon("info"))));
-  const inner = h("div", { style: { padding: "0 16px 16px", display: "flex", flexDirection: "column", gap: "10px" } });
-  inner.append(h("div", { class: "chips" },
-    h("span", { class: "chip" }, "Plan ", h("b", null, rangeText(item))),
-    h("span", { class: "chip" }, "Tempo ", h("b", null, item.tempo)),
-    h("span", { class: "chip" }, "Przerwa ", h("b", null, item.restText))));
-  if (item.variations && !e.done.length) {
-    const vs = h("div", { class: "seg" });
-    item.variations.forEach((v) => vs.append(h("button", {
-      "aria-pressed": String(v === e.variation),
-      onclick: () => { a.exercises[a.cur] = buildExercise(item, a.deload, a.pct, v); store.saveActive(a); renderSession(); },
-    }, v)));
-    inner.append(vs);
+  const rail = h("div", { class: "rail" });
+  a.exercises.forEach((e, i) => rail.append(exerciseCard(a, e, i)));
+  view.append(rail);
+
+  function paintOrientation() {
+    count.textContent = (a.cur + 1) + " / " + a.exercises.length + " " + pl(a.exercises.length, "ćwiczenie", "ćwiczeń", "ćwiczeń");
+    track.replaceChildren();
+    a.exercises.forEach((x, i) => {
+      const full = x.done.length && x.plan.length === 0;
+      track.append(h("button", { class: full ? "done" : i === a.cur ? "cur" : "", "aria-label": "Ćwiczenie " + (i + 1), onclick: () => scrollToCard(i, true) }));
+    });
   }
-  inner.append(h("div", { class: "lastline" },
-    h("span", null, "Ostatnio"),
-    e.last ? h("b", { class: "num" }, joinSets(e.last.sets, e.unit) + " = " + fmtVal(sum(e.last.sets), e.unit) + " · " + fmtDate(e.last.date))
-      : h("b", null, "brak — pierwszy raz")));
-  inner.append(h("div", { class: "lastline" },
-    h("span", null, "Cel dziś"),
-    h("b", { class: "num" }, targetText(e, a))));
-  head.append(inner);
-  view.append(head);
-
-  if (e.notes.includes("intensity")) view.append(h("div", { class: "adapt-note warn" },
-    "Dobiłeś górę zakresu serii. Wg planu: utrudnij (niżej kółka, dłuższe tempo, obciążenie) i zacznij od dołu zakresu — albo zostań, jeśli forma jeszcze nie ta."));
-  if (e.notes.includes("accumTop")) view.append(h("div", { class: "adapt-note warn" },
-    "Przekraczasz górę akumulacji z planu (" + fmtVal(item.accum.max, "sec") + "). Zbieraj ten czas w mniejszej liczbie serii."));
-  if (e.notes.includes("baseline")) view.append(h("div", { class: "adapt-note" },
-    "Tydzień 1 ustala bazę: zbierz ile się da w " + item.accum.window + " min, każdą serię 2-3 powt. przed upadkiem. Od następnego razu apka będzie celować w więcej."));
-
-  // active set
-  if (!reached) view.append(activeSetCard(a, e, item));
-  else view.append(h("section", { class: "card" },
-    h("div", { class: "set-h" }, h("h2", null, "Cel dobity"), h("span", { class: "badge" }, "✓ " + fmtVal(totalDone, e.unit) + " / " + fmtVal(e.target, e.unit))),
-    h("p", { class: "hint-text" }, "Wszystkie serie tego ćwiczenia są zapisane."),
-    a.cur < a.exercises.length - 1
-      ? h("button", { class: "btn primary", onclick: () => go(a, a.cur + 1) }, "Następne ćwiczenie", icon("arrow", "i sm"))
-      : h("button", { class: "btn primary", onclick: finishSession }, "Zakończ trening", icon("check", "i sm")),
-    h("button", { class: "btn ghost", onclick: () => { e.plan.push(e.done[e.done.length - 1].v); store.saveActive(a); renderSession(); } }, "Dodatkowa seria")));
-
-  view.append(h("div", { id: "restSlot" }));
-  if (e.note) view.append(h("div", { class: "adapt-note" + (e.noteWarn ? " warn" : "") }, e.note));
-
-  // set context mini-cards
-  if (e.done.length || e.plan.length > 1) {
-    const lastDone = e.done[e.done.length - 1];
-    const mini = h("div", { class: "mini-cards" });
-    if (lastDone) mini.append(h("div", { class: "mini" },
-      h("div", { class: "h ok" }, icon("checkCircle", "i sm"), "Seria " + e.done.length + " · zrobiona"),
-      h("span", { class: "num" }, fmtVal(lastDone.v, e.unit) + " " + (e.unit === "sec" ? "" : unitWord(e.unit, lastDone.v)) + (lastDone.rpe ? " · RPE " + lastDone.rpe : ""))));
-    if (e.plan.length > 1) mini.append(h("div", { class: "mini" },
-      h("div", { class: "h" }, "Seria " + (e.done.length + 2) + " · następna"),
-      h("span", { class: "num" }, "Cel " + fmtVal(e.plan[1], e.unit))));
-    view.append(mini);
+  function scrollToCard(i, smooth) {
+    const card = rail.children[i];
+    if (card) rail.scrollTo({ left: card.offsetLeft - rail.offsetLeft, behavior: smooth ? "smooth" : "instant" });
   }
 
+  let t = null;
+  rail.addEventListener("scroll", () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      const i = Math.round(rail.scrollLeft / rail.clientWidth);
+      if (i !== a.cur && i >= 0 && i < a.exercises.length) {
+        a.cur = i; store.saveActive(a); paintOrientation();
+      }
+    }, 90);
+  }, { passive: true });
 
-  // sets table
-  view.append(setsTable(a, e));
-
-  // next exercise
-  const nextE = a.exercises[a.cur + 1];
-  view.append(h("div", { class: "next-ex" },
-    h("button", { class: "sq-btn", "aria-label": "Poprzednie ćwiczenie", disabled: a.cur === 0, onclick: () => go(a, a.cur - 1) }, icon("back")),
-    h("div", { class: "t", style: { textAlign: "center", flex: 1 } },
-      h("small", null, nextE ? "Dalej" : "To ostatnie ćwiczenie"),
-      h("b", null, nextE ? displayName(nextE.ex, nextE.variation) + " · " + nextE.plan.length + " " + pl(nextE.plan.length, "seria", "serie", "serii") : "Zakończ, gdy skończysz")),
-    nextE ? h("button", { class: "sq-btn", "aria-label": "Następne ćwiczenie", onclick: () => go(a, a.cur + 1) }, icon("arrow"))
-      : h("button", { class: "sq-btn", "aria-label": "Zakończ trening", onclick: finishSession, style: { background: "var(--accent)", color: "var(--on-accent)" } }, icon("check"))));
-
-  // full list
-  const list = h("div", { class: "ex-list" });
-  a.exercises.forEach((x, i) => {
-    const t = sum(x.done.map((d) => d.v));
-    list.append(h("button", { class: "ex-row" + (i === a.cur ? " cur" : ""), onclick: () => go(a, i) },
-      h("span", { class: "code" }, x.code),
-      h("span", { class: "ph s40 " + EXERCISES[x.ex].group }, initials(EXERCISES[x.ex].name)),
-      h("div", { class: "body" }, h("div", { class: "nm" }, displayName(x.ex, x.variation)),
-        h("div", { class: "sub num" }, x.done.length ? fmtVal(t, x.unit) + " / " + fmtVal(x.target, x.unit) : "cel " + fmtVal(x.target, x.unit))),
-      x.done.length && !x.plan.length ? h("span", { class: "badge" }, "✓") : null));
-  });
-  view.append(h("div", { class: "section-label" }, h("span", null, "Cały trening"), h("span", null, "")), list,
-    h("button", { class: "btn ghost", onclick: finishSession }, "Zakończ trening"));
-
-  root.replaceChildren(view);
+  const bar = h("div", { class: "session-bar", id: "sessBar" });
+  root.replaceChildren(view, bar);
+  paintOrientation();
+  requestAnimationFrame(() => scrollToCard(a.cur, false));
   renderRest();
   startTick();
 }
 
+function exerciseCard(a, e, i) {
+  const item = itemOf(a, i);
+  const meta = EXERCISES[e.ex];
+  const total = e.done.length + e.plan.length;
+  const totalDone = sum(e.done.map((d) => d.v));
+  const card = h("section", { class: "ex-card", "aria-label": meta.name });
+
+  card.append(h("div", { class: "ex-status" },
+    h("span", { class: i === a.cur ? "now" : "" }, i === a.cur ? "Aktualne ćwiczenie" : e.code + " · " + (i < a.cur ? "wcześniej" : "dalej")),
+    h("button", { class: "x-btn", "aria-label": "Szczegóły ćwiczenia", onclick: () => exerciseSheet(item, e) }, icon("info", "i sm"))));
+
+  card.append(h("div", { class: "ph hero-ph " + meta.group, "aria-hidden": "true" }, initials(meta.name)));
+
+  card.append(h("div", { class: "ex-title" },
+    h("h2", null, meta.name),
+    h("span", { class: "num" }, Math.min(e.done.length, total) + " / " + total + " " + pl(total, "seria", "serie", "serii"))));
+  card.append(h("p", { class: "ex-sub" }, [e.variation, item.side ? "na stronę (L&R)" : "", "plan " + rangeText(item)].filter(Boolean).join(" · ")));
+
+  if (item.variations && !e.done.length) {
+    const vs = h("div", { class: "seg" });
+    item.variations.forEach((v) => vs.append(h("button", {
+      "aria-pressed": String(v === e.variation),
+      onclick: () => { a.exercises[i] = buildExercise(item, a.deload, a.pct, v); store.saveActive(a); renderSession(); },
+    }, v)));
+    card.append(vs);
+  }
+
+  card.append(h("div", { class: "ex-note" }, icon("info", "i sm"),
+    h("span", null, tempoText(item) + " · przerwa " + item.restText)));
+
+  card.append(h("div", { class: "ex-goal" },
+    h("span", null, "Ostatnio ", h("b", { class: "num" }, e.last ? joinSets(e.last.sets, e.unit) + " = " + fmtVal(sum(e.last.sets), e.unit) : "—")),
+    h("span", null, "Cel ", h("b", { class: "num" }, targetText(e, a)))));
+
+  card.append(setTable(a, e, i, item));
+
+  if (e.unit === "sec" && e.plan.length) card.append(stopwatch((sec) => {
+    const inp = card.querySelector("tr.cur input.v");
+    if (inp) inp.value = String(sec);
+  }));
+
+  const notes = [];
+  if (e.notes.includes("intensity")) notes.push(["warn", "Dobiłeś górę zakresu serii. Wg planu: utrudnij (niżej kółka, wolniejsze tempo, obciążenie) i zacznij od dołu zakresu."]);
+  if (e.notes.includes("accumTop")) notes.push(["warn", "Przekraczasz górę akumulacji z planu — zbieraj ten czas w mniejszej liczbie serii."]);
+  if (e.notes.includes("baseline")) notes.push(["", "Tydzień 1 ustala bazę: zbierz ile się da w " + item.accum.window + " min, każdą serię 2-3 powt. przed upadkiem."]);
+  if (item.side && !e.done.length) notes.push(["", "Najpierw słabsza strona, 30-60 s przerwy, potem mocniejsza — tyle samo powtórzeń. Wpisz wynik słabszej strony."]);
+  if (e.note) notes.push([e.noteWarn ? "warn" : "", e.note]);
+  notes.forEach(([cls, txt]) => card.append(h("div", { class: "adapt-note " + cls }, txt)));
+
+  if (totalDone >= e.target && !e.plan.length) {
+    card.append(i < a.exercises.length - 1
+      ? h("button", { class: "btn primary", onclick: () => { a.cur = i + 1; store.saveActive(a); renderSession(); } }, "Następne ćwiczenie", icon("arrow", "i sm"))
+      : h("button", { class: "btn primary", onclick: finishSession }, "Zakończ trening", icon("check", "i sm")));
+  }
+  return card;
+}
+
+function tempoText(item) {
+  const m = /^(\d)(\d)(\d|X)(\d)$/.exec(item.tempo || "");
+  if (!m) return "Tempo " + item.tempo;
+  return "Tempo " + item.tempo + ": " + m[1] + " s w dół, " + (m[2] === "0" ? "bez pauzy" : m[2] + " s pauzy") + ", " +
+    (m[3] === "X" ? "w górę dynamicznie" : m[3] + " s w górę") + (m[4] === "0" ? "" : ", " + m[4] + " s na górze");
+}
+
 function targetText(e, a) {
-  if (e.top) return e.top + "! = " + e.target + " powt." + (e.plan.length > 1 || e.done.length > 1 ? " łącznie" : "");
-  const base = fmtVal(e.target, e.unit) + (e.unit === "sec" ? " łącznie" : " " + unitWord(e.unit, e.target) + " łącznie");
+  if (e.top) return e.top + "! = " + e.target + " powt.";
+  const base = fmtVal(e.target, e.unit) + (e.unit === "sec" ? "" : " powt.");
   if (e.basis === "progress") return base + " (+" + a.pct + "%)";
   if (e.basis === "deload") return base + " (deload)";
   return base + " (start)";
 }
 
-function activeSetCard(a, e, item) {
-  const idx = e.done.length + 1;
-  const total = e.done.length + e.plan.length;
-  const planned = e.plan[0];
-  const added = idx > e.planned;
-  const card = h("section", { class: "card" });
-  card.append(h("div", { class: "set-h" },
-    h("h2", null, "Seria " + idx + " / " + total),
-    added ? h("span", { class: "badge amber" }, "Dodana") : h("span", { class: "badge" }, "Aktywna")));
+// Editable set table. Done rows: fix a number and the rest re-plans. Current row: type the
+// result (prefilled with the goal) and tap ✓. Pending rows: goals can be retyped too.
+function setTable(a, e, i, item) {
+  const isCur = i === a.cur;
+  const tb = h("tbody");
+  const repHead = e.unit === "sec" ? "Czas" : "Powt.";
 
-  let goal;
-  if (e.top) goal = e.top + "! (" + e.top + "+" + (e.top - 1) + "+…+1)";
-  else goal = fmtVal(planned, e.unit) + (e.unit === "sec" ? "" : " " + unitWord(e.unit, planned)) + (item.side ? " na stronę" : "");
-  card.append(h("div", { class: "goal-row" }, h("span", null, "Cel serii"), h("b", { class: "num" }, goal)));
+  e.done.forEach((d, k) => {
+    const v = numInput("v", d.v, e.step, "Seria " + (k + 1) + " wynik");
+    v.onchange = () => {
+      const n = Number(v.value);
+      if (!(n > 0)) { v.value = d.v; return; }
+      d.v = n;
+      e.plan = adapt(e.target, e.done.map((x) => x.v), Math.max(0, e.planned - e.done.length), e.step);
+      e.note = ""; store.saveActive(a); renderSession();
+    };
+    const r = numInput("r", d.rpe ?? "", 0.5, "Seria " + (k + 1) + " RPE", "—");
+    r.onchange = () => { d.rpe = r.value === "" ? null : Number(r.value); store.saveActive(a); };
+    const undo = k === e.done.length - 1;
+    tb.append(h("tr", { class: "done" },
+      h("td", null, k + 1), h("td", { class: "num" }, d.planned != null ? fmtVal(d.planned, e.unit) : "—"),
+      h("td", null, v), h("td", null, r),
+      h("td", null, h("button", { class: "tick on", "aria-label": undo ? "Cofnij serię " + (k + 1) : "Seria zrobiona", disabled: !undo, onclick: () => {
+        e.done.pop();
+        e.plan = adapt(e.target, e.done.map((x) => x.v), Math.max(1, e.planned - e.done.length), e.step);
+        e.note = ""; a.rest = null; store.saveActive(a); renderSession();
+      } }, icon("check", "i sm")))));
+  });
 
-  const state = { v: planned, rpe: null };
-  const valLabel = e.unit === "sec" ? "Czas (s)" : item.side ? "Powt. / stronę" : e.top ? "Powtórzeń w serii" : "Powtórzenia";
-  const vWell = well(valLabel, state.v, e.step, (v) => { state.v = v; }, e.unit === "sec" ? "s" : "");
-  const rWell = well("RPE (opcjonalnie)", "", 0.5, (v) => { state.rpe = v || null; }, "", { min: 0, max: 10, placeholder: "—" });
-  card.append(h("div", { class: "wells" }, vWell, rWell));
+  e.plan.forEach((goal, k) => {
+    const idx = e.done.length + k + 1;
+    const cur = k === 0;
+    const g = numInput("g", goal, e.step, "Seria " + idx + " cel");
+    g.onchange = () => { const n = Number(g.value); if (n > 0) { e.plan[k] = n; store.saveActive(a); renderSession(); } else g.value = goal; };
+    const v = numInput("v", cur ? goal : "", e.step, "Seria " + idx + " wynik", fmtVal(goal, e.unit));
+    const r = numInput("r", "", 0.5, "Seria " + idx + " RPE", "—");
+    const tick = h("button", { class: "tick" + (cur ? " cur" : ""), "aria-label": "Zakończ serię " + idx, onclick: () => {
+      unlockAudio();
+      // Ticking a later row first logs the rows before it at their goal values.
+      for (let j = 0; j < k; j++) e.plan.length && pushDone(a, e, e.plan[0], null);
+      const val = v.value === "" ? goal : Number(v.value);
+      logSet(a, e, item, { v: val, rpe: r.value === "" ? null : Number(r.value) }, i);
+    } }, icon("check", "i sm"));
+    tb.append(h("tr", { class: (cur ? "cur" : "") + (idx > e.planned ? " added" : "") },
+      h("td", null, idx), h("td", null, g), h("td", null, v), h("td", null, r), h("td", null, tick)));
+  });
 
-  if (e.unit === "sec") card.append(stopwatch((sec) => { vWell.set(sec); state.v = sec; }));
-  if (item.side) card.append(h("p", { class: "hint-text" }, "Najpierw słabsza strona, 30-60 s przerwy, potem mocniejsza — tyle samo powtórzeń. Wpisz liczbę ze słabszej strony."));
+  const add = h("button", { class: "add-set", "aria-label": "Dodaj serię", onclick: () => {
+    e.plan.push(e.plan[e.plan.length - 1] || (e.done.length ? e.done[e.done.length - 1].v : e.step));
+    store.saveActive(a); renderSession();
+  } }, icon("plus"));
+  const remove = e.plan.length > 1 ? h("button", { class: "link", style: { color: "var(--muted)" }, onclick: () => { e.plan.pop(); store.saveActive(a); renderSession(); } }, "Usuń ostatnią serię") : null;
 
-  card.append(h("button", {
-    class: "btn primary",
-    onclick: () => { unlockAudio(); logSet(a, e, item, state); },
-  }, "Zakończ serię " + idx + (item.rest ? " i odpocznij" : ""), icon("check", "i sm")));
-
-  const tools = h("div", { class: "row", style: { justifyContent: "center", gap: "18px" } },
-    h("button", { class: "link", onclick: () => { e.plan.push(e.plan[e.plan.length - 1] || planned); store.saveActive(a); renderSession(); } }, icon("plus", "i sm"), "Seria"),
-    e.plan.length > 1 ? h("button", { class: "link", style: { color: "var(--muted)" }, onclick: () => { e.plan.pop(); store.saveActive(a); renderSession(); } }, icon("minus", "i sm"), "Seria") : null,
-    h("button", { class: "link", style: { color: "var(--muted)" }, onclick: () => { e.plan = []; store.saveActive(a); if (e.done.length) renderSession(); else go(a, Math.min(a.cur + 1, a.exercises.length - 1)); } }, "Pomiń resztę"));
-  card.append(tools);
-  return card;
+  return h("div", { class: "set-wrap" },
+    h("table", { class: "set-grid" },
+      h("thead", null, h("tr", null, h("th", null, "Seria"), h("th", null, "Cel"), h("th", null, repHead), h("th", null, "RPE"), h("th", null, icon("check", "i sm")))),
+      tb),
+    h("div", { class: "row" }, add, h("span", { class: "hint-text num" }, fmtVal(sum(e.done.map((d) => d.v)), e.unit) + " / " + fmtVal(e.target, e.unit)), h("span", { class: "spacer" }), remove));
 }
 
-function well(label, value, step, onChange, unit, opt = {}) {
-  const min = opt.min != null ? opt.min : step;
-  const input = h("input", { type: "number", inputmode: step % 1 ? "decimal" : "numeric", value: value === "" ? "" : String(value), placeholder: opt.placeholder || "", "aria-label": label, min: String(min), step: String(step) });
-  const minus = h("button", { type: "button", "aria-label": "Mniej" }, icon("minus", "i sm"));
-  const plus = h("button", { type: "button", "aria-label": "Więcej" }, icon("plus", "i sm"));
-  function set(v) {
-    if (v === "" || v == null) { input.value = ""; onChange(""); return; }
-    v = Math.max(min, Math.round(v / step) * step);
-    if (opt.max != null) v = Math.min(opt.max, v);
-    input.value = String(v); onChange(v);
-  }
-  minus.onclick = () => { const c = Number(input.value); set(input.value === "" ? "" : c - step); };
-  plus.onclick = () => { const c = Number(input.value); set(input.value === "" ? (opt.min != null && opt.max ? 7 : step) : c + step); };
-  input.oninput = () => onChange(input.value === "" ? "" : Number(input.value));
-  input.onfocus = () => input.select();
-  const el = h("div", { class: "well" }, h("span", { class: "label" }, label),
-    h("div", { class: "box" }, h("div", { class: "val" }, input, unit ? h("span", { class: "unit" }, unit) : null),
-      h("div", { class: "adj" }, minus, plus)));
-  el.set = set;
+function numInput(cls, value, step, label, placeholder) {
+  const el = h("input", { class: cls, type: "number", inputmode: step % 1 ? "decimal" : "numeric", step: String(step), min: "0",
+    value: value === "" || value == null ? "" : String(value), placeholder: placeholder || "", "aria-label": label });
+  el.addEventListener("focus", () => el.select());
   return el;
+}
+
+function pushDone(a, e, v, rpe) {
+  const planned = e.plan[0];
+  e.done.push({ v, planned, rpe, at: new Date().toISOString() });
+  e.plan = e.plan.slice(1);
 }
 
 function stopwatch(onStop) {
@@ -433,7 +442,7 @@ function stopwatch(onStop) {
   return h("div", { class: "stopwatch" }, btn, label);
 }
 
-function logSet(a, e, item, state) {
+function logSet(a, e, item, state, i) {
   const v = Number(state.v);
   if (!(v > 0)) { toast("Wpisz wynik serii"); return; }
   const planned = e.plan[0];
@@ -450,70 +459,25 @@ function logSet(a, e, item, state) {
       " (" + joinSets(e.plan, e.unit) + ") — objętość zostaje ta sama.";
     e.noteWarn = true;
   } else if (remaining > 0 && v < planned) {
-    e.note = "Brakuje " + fmtVal(planned - v, e.unit) + " — rozkładam je na pozostałe serie: " + joinSets(e.plan, e.unit) + ".";
+    e.note = "Brakuje " + fmtVal(planned - v, e.unit) + " — rozkładam na pozostałe serie: " + joinSets(e.plan, e.unit) + ".";
   } else if (v > planned && e.plan.length) {
     e.note = "Ponad plan o " + fmtVal(v - planned, e.unit) + " — kolejne serie lżejsze: " + joinSets(e.plan, e.unit) + ".";
   } else if (remaining <= 0 && v > planned) {
     e.note = "Cel dobity z nawiązką.";
   }
 
-  const lastOverall = a.cur === a.exercises.length - 1 && !e.plan.length;
+  a.cur = i;
+  const lastOverall = i === a.exercises.length - 1 && !e.plan.length;
   if (item.rest && !lastOverall) a.rest = { endsAt: Date.now() + item.rest * 1000, total: item.rest, paused: null, beeped: false };
   else a.rest = null;
   store.saveActive(a);
   renderSession();
-  const slot = document.getElementById("restSlot");
-  if (slot && a.rest) slot.scrollIntoView({ block: "center", behavior: "smooth" });
-  else window.scrollTo({ top: 0, behavior: "smooth" });
-}
-
-function setsTable(a, e) {
-  const tb = h("tbody");
-  e.done.forEach((d, i) => {
-    tb.append(h("tr", { class: "done", onclick: () => editDone(a, e, i) },
-      h("td", null, i + 1), h("td", { class: "num" }, d.planned != null ? fmtVal(d.planned, e.unit) : "—"),
-      h("td", { class: "num" }, fmtVal(d.v, e.unit)), h("td", null, d.rpe || ""), h("td", null, icon("check", "i sm"))));
-  });
-  e.plan.forEach((v, i) => {
-    const idx = e.done.length + i + 1;
-    tb.append(h("tr", { class: (i === 0 ? "cur" : "") + (idx > e.planned ? " added" : "") },
-      h("td", null, idx), h("td", { class: "num" }, fmtVal(v, e.unit)), h("td", null, "—"), h("td", null, ""), h("td", null, h("span", { class: "dot" }))));
-  });
-  return h("section", { class: "card", style: { gap: "6px" } },
-    h("div", { class: "set-h" }, h("span", { class: "eyebrow" }, "Serie"),
-      h("span", { class: "hint-text num" }, fmtVal(sum(e.done.map((d) => d.v)), e.unit) + " / " + fmtVal(e.target, e.unit))),
-    h("table", { class: "sets-table" },
-      h("thead", null, h("tr", null, h("th", null, "Seria"), h("th", null, "Cel"), h("th", null, e.unit === "sec" ? "Czas" : "Powt."), h("th", null, "RPE"), h("th", null, icon("check", "i sm")))),
-      tb),
-    e.done.length ? h("p", { class: "hint-text", style: { textAlign: "center" } }, "Tapnij zrobioną serię, żeby ją poprawić.") : null);
-}
-
-function editDone(a, e, i) {
-  openSheet("Seria " + (i + 1), (sheet, close) => {
-    let val = e.done[i].v;
-    const w = well(e.unit === "sec" ? "Czas (s)" : "Powtórzenia", val, e.step, (v) => { val = v; }, e.unit === "sec" ? "s" : "");
-    sheet.append(w,
-      h("button", { class: "btn primary", onclick: () => {
-        if (!(Number(val) > 0)) return;
-        e.done[i].v = Number(val);
-        e.plan = adapt(e.target, e.done.map((d) => d.v), e.plan.length, e.step);
-        e.note = "";
-        store.saveActive(a); close(); renderSession();
-      } }, "Zapisz"),
-      h("button", { class: "btn danger", onclick: () => {
-        e.done.splice(i, 1);
-        e.plan = adapt(e.target, e.done.map((d) => d.v), e.plan.length + 1, e.step);
-        e.note = "";
-        store.saveActive(a); close(); renderSession();
-      } }, "Usuń serię"));
-  });
 }
 
 function go(a, i) {
   a.cur = Math.max(0, Math.min(a.exercises.length - 1, i));
   store.saveActive(a);
   renderSession();
-  window.scrollTo(0, 0);
 }
 
 function sessionMenu(a) {
@@ -558,39 +522,48 @@ function tempoHelp(t) {
     (m[3] === "X" ? "w górę eksplozywnie" : m[3] + " s w górę") + ", " + m[4] + " s pauzy na górze.");
 }
 
-// ------------------------------------------------------------------ rest timer
+// ------------------------------------------------------------------ bottom bar: rest timer
 function renderRest() {
-  const slot = document.getElementById("restSlot");
-  if (!slot) return;
+  const bar = document.getElementById("sessBar");
+  if (!bar) return;
   const a = store.getActive();
-  if (!a || !a.rest) { slot.replaceChildren(); return; }
+  if (!a) return;
   const r = a.rest;
+  if (!r) {
+    const mins = Math.floor((Date.now() - new Date(a.startedAt).getTime()) / 60000);
+    if (bar.dataset.mode === "idle" + mins) return;
+    bar.dataset.mode = "idle" + mins;
+    bar.replaceChildren(h("div", { class: "bar-in" },
+      h("div", { class: "lbl" }, icon("timer"), h("span", { class: "time num" }, mins + " min"), h("span", { class: "hint-text" }, "treningu")),
+      h("div", { class: "ctl" }, h("button", { class: "skip", onclick: finishSession }, "Zakończ trening"))));
+    return;
+  }
   const left = r.paused != null ? r.paused : (r.endsAt - Date.now()) / 1000;
   const over = left <= 0;
   if (over && !r.beeped) { r.beeped = true; store.saveActive(a); beep(); }
   const pct = Math.max(0, Math.min(100, (1 - left / r.total) * 100));
-  const timeEl = slot.querySelector(".time");
-  if (timeEl && slot.dataset.mode === (over ? "over" : "run") + (r.paused != null)) {
+  const mode = (over ? "over" : "run") + (r.paused != null);
+  const timeEl = bar.querySelector(".time");
+  if (timeEl && bar.dataset.mode === mode) {
     timeEl.textContent = over ? "+" + fmtSec(-left) : fmtSec(left);
-    slot.querySelector(".bar i").style.width = pct + "%";
+    bar.querySelector(".prog i").style.width = pct + "%";
     return;
   }
-  slot.dataset.mode = (over ? "over" : "run") + (r.paused != null);
-  const pauseBtn = h("button", { class: "b", "aria-label": r.paused != null ? "Wznów" : "Pauza", onclick: () => {
-    if (r.paused != null) { r.endsAt = Date.now() + r.paused * 1000; r.paused = null; }
-    else r.paused = Math.max(0, (r.endsAt - Date.now()) / 1000);
-    store.saveActive(a); slot.dataset.mode = ""; renderRest();
-  } }, icon(r.paused != null ? "play" : "pause", "i sm"));
-  slot.replaceChildren(
-    h("div", { class: "section-label", style: { marginBottom: "7px" } }, h("span", null, "Przerwa między seriami"), h("span", null, over ? "Czas na serię" : r.paused != null ? "Pauza" : "Odliczam")),
-    h("div", { class: "rest" + (over ? " over" : "") },
-      h("div", { class: "r1" },
-        h("div", { class: "lbl" }, icon("timer"), h("span", null, "Przerwa"), h("span", { class: "time num" }, over ? "+" + fmtSec(-left) : fmtSec(left))),
-        h("div", { class: "ctl" },
-          h("button", { class: "b", onclick: () => { if (r.paused != null) r.paused += 15; else r.endsAt += 15000; r.total += 15; r.beeped = false; store.saveActive(a); slot.dataset.mode = ""; renderRest(); } }, "+15s"),
-          pauseBtn,
-          h("button", { class: "skip", onclick: () => { a.rest = null; store.saveActive(a); renderRest(); } }, over ? "OK" : "Pomiń"))),
-      h("div", { class: "bar" }, h("i", { style: { width: pct + "%" } }))));
+  bar.dataset.mode = mode;
+  const repaint = () => { store.saveActive(a); bar.dataset.mode = ""; renderRest(); };
+  bar.replaceChildren(
+    h("div", { class: "prog" }, h("i", { style: { width: pct + "%" } })),
+    h("div", { class: "bar-in" + (over ? " over" : "") },
+      h("div", { class: "lbl" }, icon("timer"), h("span", { class: "time num" }, over ? "+" + fmtSec(-left) : fmtSec(left)),
+        h("span", { class: "hint-text" }, over ? "czas na serię" : r.paused != null ? "pauza" : "przerwa")),
+      h("div", { class: "ctl" },
+        h("button", { class: "b", onclick: () => { if (r.paused != null) r.paused += 15; else r.endsAt += 15000; r.total += 15; r.beeped = false; repaint(); } }, "+15s"),
+        h("button", { class: "b", "aria-label": r.paused != null ? "Wznów" : "Pauza", onclick: () => {
+          if (r.paused != null) { r.endsAt = Date.now() + r.paused * 1000; r.paused = null; }
+          else r.paused = Math.max(0, (r.endsAt - Date.now()) / 1000);
+          repaint();
+        } }, icon(r.paused != null ? "play" : "pause", "i sm")),
+        h("button", { class: "skip", onclick: () => { a.rest = null; repaint(); } }, over ? "OK" : "Pomiń"))));
 }
 
 function startTick() { stopTick(); tick = setInterval(renderRest, 250); }
